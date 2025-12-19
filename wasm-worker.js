@@ -1,21 +1,53 @@
 // wasm-worker.js - Web Worker for background WASM processing
-importScripts('wasm_exec.js');
+
+// Try to load wasm_exec.js with better error handling
+try {
+    importScripts('wasm_exec.js');
+} catch (err) {
+    self.postMessage({
+        type: 'error',
+        error: 'Failed to load wasm_exec.js: ' + err.message
+    });
+    throw new Error('wasm_exec.js not found');
+}
 
 let wasmReady = false;
-const go = new Go();
+let go = null;
+
+// Initialize Go runtime
+try {
+    go = new Go();
+} catch (err) {
+    self.postMessage({
+        type: 'error',
+        error: 'Failed to initialize Go runtime: ' + err.message
+    });
+}
 
 // Load WASM module
-WebAssembly.instantiateStreaming(fetch('main.wasm'), go.importObject)
-    .then((result) => {
-        go.run(result.instance);
-        wasmReady = true;
-        self.postMessage({type: 'ready'});
-        console.log('✅ WASM Worker ready');
-    })
-    .catch((err) => {
-        console.error('❌ Worker failed to load WASM:', err);
-        self.postMessage({type: 'error', error: err.message});
-    });
+if (go) {
+    fetch('main.wasm')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Failed to fetch main.wasm');
+            }
+            return response.arrayBuffer();
+        })
+        .then(bytes => WebAssembly.instantiate(bytes, go.importObject))
+        .then(result => {
+            go.run(result.instance);
+            wasmReady = true;
+            self.postMessage({type: 'ready'});
+            console.log('✅ WASM Worker ready');
+        })
+        .catch((err) => {
+            console.error('❌ Worker failed to load WASM:', err);
+            self.postMessage({
+                type: 'error',
+                error: 'WASM loading failed: ' + err.message
+            });
+        });
+}
 
 // Handle messages from main thread
 self.onmessage = async function(e) {

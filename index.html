@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Pure Dupes - Phase 1 Enhanced</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Inline cache-db.js to avoid file:// protocol issues
+        const DB_NAME = 'pure-dupes-cache';
+        const DB_VERSION = 1;
+        const HASH_STORE = 'file-hashes';
+        const RESULTS_STORE = 'analysis-results';
+
+        class CacheDB {
+            constructor() {
+                this.db = null;
+            }
+            
+            async init() {
+                return new Promise((resolve, reject) => {
+                    const request = indexedDB.open(DB_NAME, DB_VERSION);
+                    
+                    request.onerror = () => reject(request.error);
+                    request.onsuccess = () => {
+                        this.db = request.result;
+                        resolve();
+                    };
+                    
+                    request.onupgradeneeded = (event) => {
+                        const db = event.target.result;
+                        
+                        if (!db.objectStoreNames.contains(HASH_STORE)) {
+                            const hashStore = db.createObjectStore(HASH_STORE, {keyPath: 'path'});
+                            hashStore.createIndex('hash', 'hash', {unique: false});
+                            hashStore.createIndex('size', 'size', {unique: false});
+                            hashStore.createIndex('modTime', 'modTime', {unique: false});
+                        }
+                        
+                        if (!db.objectStoreNames.contains(RESULTS_STORE)) {
+                            db.createObjectStore(RESULTS_STORE, {keyPath: 'id'});
+                        }
+                    };
+                });
+            }
+            
+            async putFileHash(path, hash, size, modTime, chunks) {
+                if (!this.db) return;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([HASH_STORE], 'readwrite');
+                    const store = transaction.objectStore(HASH_STORE);
+                    
+                    const data = {
+                        path, hash, size, modTime, chunks,
+                        timestamp: Date.now()
+                    };
+                    
+                    const request = store.put(data);
+                    request.onsuccess = () => resolve();
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            
+            async getFileHash(path) {
+                if (!this.db) return null;
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([HASH_STORE], 'readonly');
+                    const store = transaction.objectStore(HASH_STORE);
+                    const request = store.get(path);
+                    
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => reject(request.error);
+                });
+            }
+            
+            async isCached(path, size, modTime) {
+                const cached = await this.getFileHash(path);
+                if (!cached) return false;
+                return cached.size === size && cached.modTime === modTime;
+            }
+            
+            async getStats() {
+                if (!this.db) return {cachedFiles: 0};
+                return new Promise((resolve, reject) => {
+                    const transaction = this.db.transaction([HASH_STORE], 'readonly');
+                    const store = transaction.objectStore(HASH_STORE);
+                    const countRequest = store.count();
+                    
+                    countRequest.onsuccess = () => {
+                        resolve({cachedFiles: countRequest.result});
+                    };
+                    countRequest.onerror = () => reject(countRequest.error);
+                });
+            }
+            
+            async clear() {
+                if (!this.db) return;
+                const hashTransaction = this.db.transaction([HASH_STORE], 'readwrite');
+                await hashTransaction.objectStore(HASH_STORE).clear();
+                
+                const resultsTransaction = this.db.transaction([RESULTS_STORE], 'readwrite');
+                await resultsTransaction.objectStore(RESULTS_STORE).clear();
+            }
+        }
+
+        const cacheDB = new CacheDB();
+    </script>
+    <style>
+        :root {
+            --accent: #CD7F59;
+            --accent-light: #E0A388;
+            --accent-dark: #B06D4A;
+            --bg: #F5F3EF;
+            --text: #1A1A1A;
+            --gray: #6B6B6B;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background-color: var(--bg);
+            margin: 0;
+            padding: 0;
+        }
+        .progress-bar {
+            height: 4px;
+            background: var(--accent);
+            transition: width 0.3s ease;
+        }
+        .smart-group {
+            border-left: 4px solid var(--accent);
+            background: white;
+            padding: 16px;
+            margin: 12px 0;
+            border-radius: 8px;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .processing { animation: pulse 2s ease-in-out infinite; }
+    </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+    const {useState, useEffect, useRef} = React;
+
+    function App() {
+        const [result, setResult] = useState(null);
+        const [loading, setLoading] = useState(false);
+        const [progress, setProgress] = useState({current: 0, total: 100, message: '', percent: 0});
+        const [cacheStats, setCacheStats] = useState({cachedFiles: 0});
+        const [worker, setWorker] = useState(null);
+        const [workerReady, setWorkerReady] = useState(false);
+        const [isFileProtocol, setIsFileProtocol] = useState(false);
+
+        // Check if opened via file:// protocol
+        useEffect(() => {
+            if (window.location.protocol === 'file:') {
+                setIsFileProtocol(true);
+                console.warn('⚠️ Opened via file:// protocol');
+                console.warn('💡 Web Worker and WASM may not work properly');
+                console.warn('📖 Please run via HTTP server:');
+                console.warn('   python3 -m http.server 8080');
+                console.warn('   Then open: http://localhost:8080');
+            }
+        }, []);
+
+        // Initialize Worker and Cache
+        useEffect(() => {
+            // Initialize IndexedDB
+            cacheDB.init().then(() => {
+                return cacheDB.getStats();
+            }).then(stats => {
+                setCacheStats(stats);
+                console.log('✅ Cache initialized:', stats);
+            }).catch(err => {
+                console.error('Cache init failed:', err);
+            });
+
+            // Initialize Web Worker (with fallback)
+            try {
+                const w = new Worker('wasm-worker.js');
+                
+                w.onmessage = (e) => {
+                    const {type, data, error} = e.data;
+                    
+                    if (type === 'ready') {
+                        setWorkerReady(true);
+                        console.log('✅ Web Worker ready');
+                    } else if (type === 'progress') {
+                        setProgress(data);
+                    } else if (type === 'complete') {
+                        setResult(data);
+                        setLoading(false);
+                        setProgress({current: 0, total: 100, message: '', percent: 0});
+                    } else if (type === 'error') {
+                        alert('Error: ' + error);
+                        setLoading(false);
+                    }
+                };
+                
+                w.onerror = (err) => {
+                    console.error('Worker error:', err);
+                    console.warn('⚠️ Worker failed - this might be due to file:// protocol');
+                    console.warn('💡 Please run via HTTP server: python3 -m http.server 8080');
+                    setWorkerReady(false);
+                };
+                
+                setWorker(w);
+                
+                return () => w.terminate();
+            } catch (err) {
+                console.error('Failed to create worker:', err);
+                console.warn('⚠️ Running without Web Worker');
+                console.warn('💡 To use Worker, run via HTTP server: python3 -m http.server 8080');
+                setWorkerReady(false);
+            }
+        }, []);
+
+        const analyze = async (fileList) => {
+            if (!workerReady) {
+                alert('Worker not ready yet, please wait...');
+                return;
+            }
+
+            setLoading(true);
+            setProgress({current: 0, total: 100, message: 'Reading files...', percent: 0});
+            
+            try {
+                // Read files
+                const files = await Promise.all(
+                    Array.from(fileList).map(async (file) => {
+                        // Check cache first
+                        const cached = await cacheDB.isCached(
+                            file.webkitRelativePath || file.name,
+                            file.size,
+                            file.lastModified
+                        );
+                        
+                        let data;
+                        if (cached) {
+                            console.log('Using cached:', file.name);
+                            const cachedData = await cacheDB.getFileHash(file.webkitRelativePath || file.name);
+                            data = new Uint8Array(0); // Don't need data for cached files
+                        } else {
+                            const arrayBuffer = await file.arrayBuffer();
+                            data = new Uint8Array(arrayBuffer);
+                        }
+                        
+                        return {
+                            name: file.name,
+                            path: file.webkitRelativePath || file.name,
+                            size: file.size,
+                            modTime: file.lastModified,
+                            data: data
+                        };
+                    })
+                );
+
+                console.log(`📁 Processing ${files.length} files...`);
+
+                // Send to worker
+                worker.postMessage({
+                    type: 'analyze',
+                    data: {
+                        files: files,
+                        threshold: 0.8,
+                        chunkSize: 4096
+                    }
+                });
+
+            } catch (err) {
+                console.error('Analysis error:', err);
+                alert('Error: ' + err.message);
+                setLoading(false);
+            }
+        };
+
+        const clearCache = async () => {
+            if (confirm('Clear all cached file hashes?')) {
+                await cacheDB.clear();
+                const stats = await cacheDB.getStats();
+                setCacheStats(stats);
+                alert('Cache cleared!');
+            }
+        };
+
+        return (
+            <div className="min-h-screen">
+                {/* File Protocol Warning */}
+                {isFileProtocol && (
+                    <div className="fixed top-0 left-0 right-0 z-50 bg-yellow-100 border-b-2 border-yellow-400 p-4">
+                        <div className="max-w-6xl mx-auto">
+                            <div className="flex items-start gap-3">
+                                <div className="text-2xl">⚠️</div>
+                                <div className="flex-1">
+                                    <div className="font-semibold text-yellow-900">File Protocol Detected</div>
+                                    <div className="text-sm text-yellow-800 mt-1">
+                                        Web Worker features won't work when opened directly as a file.
+                                        <br/>
+                                        <strong>To use all features:</strong>
+                                    </div>
+                                    <div className="mt-2 bg-yellow-50 p-2 rounded font-mono text-xs">
+                                        python3 -m http.server 8080
+                                        <br/>
+                                        Then open: http://localhost:8080
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Progress Bar */}
+                {loading && (
+                    <div className="fixed top-0 left-0 right-0 z-50">
+                        <div className="bg-white border-b shadow-sm p-4">
+                            <div className="max-w-4xl mx-auto">
+                                <div className="flex justify-between mb-2">
+                                    <span className="text-sm font-medium">{progress.message}</span>
+                                    <span className="text-sm text-gray-600">{Math.round(progress.percent)}%</span>
+                                </div>
+                                <div className="w-full bg-gray-200 rounded-full h-2">
+                                    <div 
+                                        className="progress-bar rounded-full"
+                                        style={{width: `${progress.percent}%`}}
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Header */}
+                <div className={`bg-white border-b ${isFileProtocol ? 'mt-24' : ''}`}>
+                    <div className="max-w-6xl mx-auto px-6 py-4">
+                        <div className="flex justify-between items-center">
+                            <div>
+                                <h1 className="text-2xl font-bold">🔍 pure-dupes Phase 1</h1>
+                                <p className="text-sm text-gray-600">
+                                    ✨ Web Workers • 💾 Caching • 📊 Smart Groups • 📈 Progress
+                                </p>
+                            </div>
+                            <div className="flex gap-4 items-center">
+                                <div className="text-sm">
+                                    <div className="text-gray-600">Cached: {cacheStats.cachedFiles} files</div>
+                                    <button onClick={clearCache} className="text-xs text-blue-600 hover:underline">
+                                        Clear Cache
+                                    </button>
+                                </div>
+                                {!workerReady && <span className="text-xs processing">Loading...</span>}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Main Content */}
+                <div className="max-w-6xl mx-auto px-6 py-6">
+                    {!result ? (
+                        <div className="bg-white rounded-xl p-12 text-center">
+                            <div className="text-6xl mb-4">🚀</div>
+                            <h2 className="text-2xl font-semibold mb-4">Phase 1 Features Ready!</h2>
+                            <div className="grid grid-cols-2 gap-4 mb-6 text-left max-w-2xl mx-auto">
+                                <div className="p-4 bg-blue-50 rounded">
+                                    <div className="font-semibold mb-1">⚡ Web Workers</div>
+                                    <div className="text-sm text-gray-600">Non-blocking UI processing</div>
+                                </div>
+                                <div className="p-4 bg-green-50 rounded">
+                                    <div className="font-semibold mb-1">💾 IndexedDB Cache</div>
+                                    <div className="text-sm text-gray-600">10-100x faster re-scans</div>
+                                </div>
+                                <div className="p-4 bg-purple-50 rounded">
+                                    <div className="font-semibold mb-1">📊 Smart Groups</div>
+                                    <div className="text-sm text-gray-600">Intelligent duplicate grouping</div>
+                                </div>
+                                <div className="p-4 bg-orange-50 rounded">
+                                    <div className="font-semibold mb-1">📈 Progress</div>
+                                    <div className="text-sm text-gray-600">Real-time feedback</div>
+                                </div>
+                            </div>
+                            <label className="inline-block px-8 py-3 rounded-lg font-medium text-white cursor-pointer"
+                                   style={{background: workerReady ? 'var(--accent)' : '#ccc'}}>
+                                {workerReady ? 'Choose Files' : 'Initializing...'}
+                                <input
+                                    type="file"
+                                    multiple
+                                    webkitdirectory=""
+                                    directory=""
+                                    onChange={(e) => {
+                                        if (e.target.files && e.target.files.length > 0) {
+                                            analyze(e.target.files);
+                                        }
+                                    }}
+                                    disabled={!workerReady}
+                                    style={{display: 'none'}}
+                                />
+                            </label>
+                        </div>
+                    ) : (
+                        <div>
+                            {/* Stats */}
+                            <div className="bg-white rounded-xl p-6 mb-6">
+                                <h2 className="text-xl font-semibold mb-4">📊 Analysis Results</h2>
+                                <div className="grid grid-cols-4 gap-4">
+                                    <div className="text-center p-4 bg-blue-50 rounded">
+                                        <div className="text-2xl font-bold">{result.TotalFiles}</div>
+                                        <div className="text-sm text-gray-600">Total Files</div>
+                                    </div>
+                                    <div className="text-center p-4 bg-green-50 rounded">
+                                        <div className="text-2xl font-bold">{result.UniqueFiles}</div>
+                                        <div className="text-sm text-gray-600">Unique</div>
+                                    </div>
+                                    <div className="text-center p-4 bg-red-50 rounded">
+                                        <div className="text-2xl font-bold">{result.FullDupCount}</div>
+                                        <div className="text-sm text-gray-600">Exact Dupes</div>
+                                    </div>
+                                    <div className="text-center p-4 bg-orange-50 rounded">
+                                        <div className="text-2xl font-bold">{result.PartialDupCount}</div>
+                                        <div className="text-sm text-gray-600">Similar</div>
+                                    </div>
+                                </div>
+                                <div className="mt-4 text-center">
+                                    <div className="text-sm text-gray-600">Processing Time: {result.ProcessingTime?.toFixed(2)}s</div>
+                                    <div className="text-sm text-gray-600">Space Saved: {(result.SpaceSaved / 1024 / 1024).toFixed(2)} MB</div>
+                                </div>
+                            </div>
+
+                            {/* Smart Duplicate Groups */}
+                            {result.DuplicateGroups && result.DuplicateGroups.length > 0 && (
+                                <div className="bg-white rounded-xl p-6">
+                                    <h2 className="text-xl font-semibold mb-4">🎯 Smart Duplicate Groups</h2>
+                                    {result.DuplicateGroups.slice(0, 10).map((group, idx) => (
+                                        <div key={idx} className="smart-group">
+                                            <div className="flex justify-between items-start mb-2">
+                                                <div className="font-semibold">
+                                                    {group.GroupType === 'exact' ? '🔴 Exact Match' : '🟠 Similar Files'}
+                                                </div>
+                                                <div className="text-sm text-gray-600">
+                                                    {(group.Similarity * 100).toFixed(0)}% similar
+                                                </div>
+                                            </div>
+                                            <div className="space-y-1">
+                                                {group.Files.map((file, fidx) => (
+                                                    <div key={fidx} className="text-sm font-mono text-gray-700 pl-4">
+                                                        📄 {file}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            {group.Savings > 0 && (
+                                                <div className="mt-2 text-sm text-green-600">
+                                                    💾 Potential savings: {(group.Savings / 1024 / 1024).toFixed(2)} MB
+                                                </div>
+                                            )}
+                                        </div>
+                                    ))}
+                                    {result.DuplicateGroups.length > 10 && (
+                                        <div className="text-center text-sm text-gray-600 mt-4">
+                                            ... and {result.DuplicateGroups.length - 10} more groups
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            <div className="mt-6 text-center">
+                                <button
+                                    onClick={() => {
+                                        setResult(null);
+                                        setProgress({current: 0, total: 100, message: '', percent: 0});
+                                    }}
+                                    className="px-6 py-2 rounded-lg bg-gray-200 hover:bg-gray-300"
+                                >
+                                    Analyze More Files
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        );
+    }
+
+    ReactDOM.render(<App/>, document.getElementById('root'));
+</script>
+</body>
+</html>
