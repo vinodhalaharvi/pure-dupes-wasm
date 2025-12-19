@@ -31,9 +31,9 @@ GOMOD
 fi
 
 # Step 1: Build Enhanced WASM
-echo -e "${BLUE}Step 1: Building Enhanced WASM Module${NC}"
-echo "Features: Progress reporting, Smart groups, Caching support"
-GOOS=js GOARCH=wasm go build -ldflags="-s -w" -o main.wasm main_wasm_enhanced.go
+echo -e "${BLUE}Step 1: Building Enhanced WASM Module (Phase 1 + Phase 2)${NC}"
+echo "Features: Progress, Smart groups, Caching, Image similarity (pHash)"
+GOOS=js GOARCH=wasm go build -ldflags="-s -w" -o main.wasm main_wasm_enhanced.go phash.go
 
 if [ $? -eq 0 ]; then
     SIZE=$(du -h main.wasm | cut -f1)

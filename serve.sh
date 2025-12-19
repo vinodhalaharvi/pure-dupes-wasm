@@ -9,16 +9,28 @@ echo "🚀 Starting Phase 1 Server"
 echo "=========================="
 echo ""
 
-# Check if files exist
-if [ ! -f "index_phase1.html" ]; then
-    echo "❌ index_phase1.html not found"
-    echo "💡 Run ./build_phase1.sh first"
+# Check if files exist first
+if [ ! -f "index.html" ]; then
+    echo "❌ index.html not found"
+    echo "💡 Run ./build.sh first"
     exit 1
 fi
 
 if [ ! -f "main.wasm" ]; then
     echo "❌ main.wasm not found"
-    echo "💡 Run ./build_phase1.sh first"
+    echo "💡 Run ./build.sh first"
+    exit 1
+fi
+
+if [ ! -f "wasm_exec.js" ]; then
+    echo "❌ wasm_exec.js not found"
+    echo "💡 Run ./build.sh first"
+    exit 1
+fi
+
+if [ ! -f "wasm-worker.js" ]; then
+    echo "❌ wasm-worker.js not found"
+    echo "💡 This file should be in the package"
     exit 1
 fi
 
@@ -36,7 +48,7 @@ echo "✅ All files present"
 echo "📡 Starting server on port $PORT"
 echo ""
 echo "🌐 Open in browser:"
-echo "   http://localhost:$PORT/index_phase1.html"
+echo "   http://localhost:$PORT"
 echo ""
 echo "📚 Features available:"
 echo "   ✅ Web Workers"

@@ -6,9 +6,9 @@ try {
 } catch (err) {
     self.postMessage({
         type: 'error',
-        error: 'Failed to load wasm_exec.js: ' + err.message
+        error: 'Failed to load wasm_exec.js. Make sure you ran ./build.sh first! Error: ' + err.message
     });
-    throw new Error('wasm_exec.js not found');
+    throw new Error('wasm_exec.js not found - did you run ./build.sh?');
 }
 
 let wasmReady = false;
@@ -29,7 +29,7 @@ if (go) {
     fetch('main.wasm')
         .then(response => {
             if (!response.ok) {
-                throw new Error('Failed to fetch main.wasm');
+                throw new Error('Failed to fetch main.wasm - did you run ./build.sh?');
             }
             return response.arrayBuffer();
         })
@@ -44,7 +44,7 @@ if (go) {
             console.error('❌ Worker failed to load WASM:', err);
             self.postMessage({
                 type: 'error',
-                error: 'WASM loading failed: ' + err.message
+                error: 'WASM loading failed: ' + err.message + '. Make sure you ran ./build.sh!'
             });
         });
 }
@@ -57,7 +57,7 @@ self.onmessage = async function(e) {
         if (!wasmReady) {
             self.postMessage({
                 type: 'error',
-                error: 'WASM module not ready yet'
+                error: 'WASM module not ready yet. Please wait a moment and try again.'
             });
             return;
         }

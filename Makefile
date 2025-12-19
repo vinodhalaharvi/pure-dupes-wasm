@@ -59,8 +59,8 @@ build: check-go wasm runtime mcp test-files $(INDEX)
 wasm: $(WASM_FILE)
 
 $(WASM_FILE): $(WASM_SRC)
-	@echo "$(BLUE)📦 Building WASM module...$(NC)"
-	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -o $(WASM_FILE) $(WASM_SRC)
+	@echo "$(BLUE)📦 Building WASM module (Phase 1 + Phase 2)...$(NC)"
+	GOOS=js GOARCH=wasm go build -ldflags="-s -w" -o $(WASM_FILE) $(WASM_SRC) phash.go
 	@echo "$(GREEN)✅ WASM built: $$(du -h $(WASM_FILE) | cut -f1)$(NC)"
 
 # Get wasm_exec.js runtime
