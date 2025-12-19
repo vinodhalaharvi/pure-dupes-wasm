@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Pure Dupes - Phase 1 Enhanced</title>
+    <title>Pure Dupes - Duplicate Finder (100% Local)</title>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -362,28 +362,38 @@
                     {!result ? (
                         <div className="bg-white rounded-xl p-12 text-center">
                             <div className="text-6xl mb-4">🚀</div>
-                            <h2 className="text-2xl font-semibold mb-4">Phase 1 Features Ready!</h2>
+                            <h2 className="text-2xl font-semibold mb-4">Phase 1 + Phase 2 Features</h2>
+                            
+                            {/* Privacy Notice */}
+                            <div className="mb-6 p-4 bg-green-50 border-2 border-green-500 rounded-lg max-w-2xl mx-auto">
+                                <div className="font-bold text-green-900 mb-2">🔒 100% Private - Everything Runs Locally</div>
+                                <div className="text-sm text-green-800">
+                                    Your files <strong>never leave your browser</strong>. All processing happens on your computer.
+                                    No uploads, no server, complete privacy.
+                                </div>
+                            </div>
+                            
                             <div className="grid grid-cols-2 gap-4 mb-6 text-left max-w-2xl mx-auto">
                                 <div className="p-4 bg-blue-50 rounded">
-                                    <div className="font-semibold mb-1">⚡ Web Workers</div>
-                                    <div className="text-sm text-gray-600">Non-blocking UI processing</div>
-                                </div>
-                                <div className="p-4 bg-green-50 rounded">
-                                    <div className="font-semibold mb-1">💾 IndexedDB Cache</div>
-                                    <div className="text-sm text-gray-600">10-100x faster re-scans</div>
-                                </div>
-                                <div className="p-4 bg-purple-50 rounded">
-                                    <div className="font-semibold mb-1">📊 Smart Groups</div>
-                                    <div className="text-sm text-gray-600">Intelligent duplicate grouping</div>
+                                    <div className="font-semibold mb-1">🔴 Exact Duplicates</div>
+                                    <div className="text-sm text-gray-600">Merkle tree detection</div>
                                 </div>
                                 <div className="p-4 bg-orange-50 rounded">
-                                    <div className="font-semibold mb-1">📈 Progress</div>
-                                    <div className="text-sm text-gray-600">Real-time feedback</div>
+                                    <div className="font-semibold mb-1">🟠 Partial Duplicates</div>
+                                    <div className="text-sm text-gray-600">Chunk-based similarity</div>
+                                </div>
+                                <div className="p-4 bg-purple-50 rounded">
+                                    <div className="font-semibold mb-1">🟣 Visual Duplicates</div>
+                                    <div className="text-sm text-gray-600">pHash image similarity</div>
+                                </div>
+                                <div className="p-4 bg-green-50 rounded">
+                                    <div className="font-semibold mb-1">💾 Smart Cache</div>
+                                    <div className="text-sm text-gray-600">10-100x faster re-scans</div>
                                 </div>
                             </div>
                             <label className="inline-block px-8 py-3 rounded-lg font-medium text-white cursor-pointer"
                                    style={{background: workerReady ? 'var(--accent)' : '#ccc'}}>
-                                {workerReady ? 'Choose Files' : 'Initializing...'}
+                                {workerReady ? 'Select Files (Local Only)' : 'Initializing...'}
                                 <input
                                     type="file"
                                     multiple
@@ -398,6 +408,9 @@
                                     style={{display: 'none'}}
                                 />
                             </label>
+                            <div className="text-xs text-gray-500 mt-3">
+                                Files stay on your computer • Processed in browser • Zero uploads
+                            </div>
                         </div>
                     ) : (
                         <div>
