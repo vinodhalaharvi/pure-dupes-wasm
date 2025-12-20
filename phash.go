@@ -11,10 +11,28 @@ import (
 	"strings"
 )
 
-// Check if file is an image
+// Check if file is an image or video
+func isMediaFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	// Images
+	if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" {
+		return true
+	}
+	// Videos
+	if ext == ".mov" || ext == ".mp4" || ext == ".webm" || ext == ".avi" || ext == ".m4v" {
+		return true
+	}
+	return false
+}
+
 func isImageFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	return ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif"
+}
+
+func isVideoFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".mov" || ext == ".mp4" || ext == ".webm" || ext == ".avi" || ext == ".m4v"
 }
 
 // DCT (Discrete Cosine Transform) for pHash
@@ -159,16 +177,51 @@ func hashSimilarity(hash1, hash2 uint64) float64 {
 	return 1.0 - (float64(distance) / 64.0)
 }
 
-// Find visually similar images
-func findVisualDuplicates(files []FileTree, threshold float64) map[string][]DuplicateMatch {
-	reportProgress(0, 100, "Finding visually similar images...", 80)
+// Compare video hashes (array of frame hashes)
+func videoHashSimilarity(video1Hashes, video2Hashes []uint64) float64 {
+	if len(video1Hashes) == 0 || len(video2Hashes) == 0 {
+		return 0.0
+	}
 
+	// Compare frame by frame
+	matches := 0
+	minLen := len(video1Hashes)
+	if len(video2Hashes) < minLen {
+		minLen = len(video2Hashes)
+	}
+
+	for i := 0; i < minLen; i++ {
+		similarity := hashSimilarity(video1Hashes[i], video2Hashes[i])
+		if similarity >= 0.85 { // Frame is 85%+ similar
+			matches++
+		}
+	}
+
+	// Percentage of frames that match
+	maxLen := len(video1Hashes)
+	if len(video2Hashes) > maxLen {
+		maxLen = len(video2Hashes)
+	}
+
+	return float64(matches) / float64(maxLen)
+}
+
+// Find visually similar images and videos
+func findVisualDuplicates(files []FileTree, threshold float64) map[string][]DuplicateMatch {
+	reportProgress(0, 100, "Finding visually similar media...", 80)
+
+	// Separate images and videos
 	imageFiles := Filter(files, func(ft FileTree) bool {
 		return ft.IsImage && ft.PHash != 0
 	})
 
+	videoFiles := Filter(files, func(ft FileTree) bool {
+		return ft.IsVideo && len(ft.VideoHash) > 0
+	})
+
 	matches := make(map[string][]DuplicateMatch)
 
+	// Compare images
 	for i, src := range imageFiles {
 		for j, tgt := range imageFiles {
 			if i >= j {
@@ -176,6 +229,33 @@ func findVisualDuplicates(files []FileTree, threshold float64) map[string][]Dupl
 			}
 
 			similarity := hashSimilarity(src.PHash, tgt.PHash)
+
+			if similarity >= threshold {
+				matches[src.Path] = append(matches[src.Path], DuplicateMatch{
+					TargetPath: tgt.Path,
+					Similarity: similarity,
+					SharedSize: src.Size,
+					MatchType:  "visual",
+				})
+
+				matches[tgt.Path] = append(matches[tgt.Path], DuplicateMatch{
+					TargetPath: src.Path,
+					Similarity: similarity,
+					SharedSize: tgt.Size,
+					MatchType:  "visual",
+				})
+			}
+		}
+	}
+
+	// Compare videos
+	for i, src := range videoFiles {
+		for j, tgt := range videoFiles {
+			if i >= j {
+				continue
+			}
+
+			similarity := videoHashSimilarity(src.VideoHash, tgt.VideoHash)
 
 			if similarity >= threshold {
 				matches[src.Path] = append(matches[src.Path], DuplicateMatch{

@@ -220,19 +220,144 @@
             }
         }, []);
 
+        // ====================================================================
+        // VIDEO FRAME EXTRACTION FOR PHASH
+        // ====================================================================
+        
+        function isVideoFile(filename) {
+            const ext = filename.toLowerCase().split('.').pop();
+            return ['mov', 'mp4', 'webm', 'avi', 'm4v'].includes(ext);
+        }
+
+        async function extractVideoFrames(videoFile, framesPerSecond = 1) {
+            return new Promise((resolve, reject) => {
+                const video = document.createElement('video');
+                video.muted = true;
+                video.playsInline = true;
+                
+                const url = URL.createObjectURL(videoFile);
+                video.src = url;
+                
+                const frames = [];
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                
+                video.onloadedmetadata = async () => {
+                    canvas.width = 320;
+                    canvas.height = 240;
+                    
+                    const duration = video.duration;
+                    const frameTimes = [];
+                    
+                    for (let time = 0; time < duration; time += 1/framesPerSecond) {
+                        frameTimes.push(time);
+                    }
+                    
+                    try {
+                        for (const time of frameTimes) {
+                            await new Promise((resolveSeek) => {
+                                video.currentTime = time;
+                                video.onseeked = () => resolveSeek();
+                            });
+                            
+                            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                            frames.push(imageData.data);
+                        }
+                        
+                        URL.revokeObjectURL(url);
+                        resolve(frames);
+                    } catch (err) {
+                        URL.revokeObjectURL(url);
+                        reject(err);
+                    }
+                };
+                
+                video.onerror = (err) => {
+                    URL.revokeObjectURL(url);
+                    reject(err);
+                };
+            });
+        }
+
+        function computeSimplePHash(imageData) {
+            const width = 320, height = 240;
+            const smallSize = 8;
+            const pixels = [];
+            
+            for (let y = 0; y < smallSize; y++) {
+                for (let x = 0; x < smallSize; x++) {
+                    const srcX = Math.floor(x * width / smallSize);
+                    const srcY = Math.floor(y * height / smallSize);
+                    const idx = (srcY * width + srcX) * 4;
+                    
+                    const gray = imageData[idx] * 0.299 + imageData[idx + 1] * 0.587 + imageData[idx + 2] * 0.114;
+                    pixels.push(gray);
+                }
+            }
+            
+            const avg = pixels.reduce((a, b) => a + b, 0) / pixels.length;
+            
+            let hash = 0n;
+            for (let i = 0; i < pixels.length; i++) {
+                if (pixels[i] > avg) {
+                    hash |= (1n << BigInt(i));
+                }
+            }
+            
+            return Number(hash & 0xFFFFFFFFFFFFFFFFn);
+        }
+
+        async function processVideoFile(videoFile) {
+            try {
+                console.log(`🎬 Processing video: ${videoFile.name}...`);
+                const frames = await extractVideoFrames(videoFile, 1);
+                
+                console.log(`  ✅ Extracted ${frames.length} frames`);
+                const frameHashes = frames.map(frameData => computeSimplePHash(frameData));
+                
+                return frameHashes;
+            } catch (err) {
+                console.error(`  ❌ Video processing failed: ${videoFile.name}`, err);
+                return [];
+            }
+        }
+
         const analyze = async (fileList) => {
             if (!workerReady) {
                 alert('Worker not ready yet, please wait...');
                 return;
             }
 
+            // DEBUG: Log what we received
+            console.log('📂 Folder selected');
+            console.log(`📊 Browser gave us ${fileList.length} items`);
+            
+            // Filter out directories (only process actual files)
+            const actualFiles = Array.from(fileList).filter(f => f.size > 0 || f.type !== '');
+            console.log(`📄 Actual files (non-empty): ${actualFiles.length}`);
+            console.log('📝 First 10 files:', actualFiles.slice(0, 10).map(f => ({
+                name: f.name,
+                path: f.webkitRelativePath || f.name,
+                size: f.size,
+                type: f.type
+            })));
+
+            if (actualFiles.length === 0) {
+                alert('No readable files found! This can happen if:\n• Browser lacks permissions\n• Folder only contains directories\n• All files are hidden/system files');
+                setLoading(false);
+                return;
+            }
+
             setLoading(true);
-            setProgress({current: 0, total: 100, message: 'Reading files...', percent: 0});
+            setProgress({current: 0, total: actualFiles.length, message: `Reading ${actualFiles.length} files...`, percent: 0});
             
             try {
-                // Read files
+                // Read files and process videos
                 const files = await Promise.all(
-                    Array.from(fileList).map(async (file) => {
+                    actualFiles.map(async (file, index) => {
+                        setProgress({current: index + 1, total: actualFiles.length, message: `Reading ${file.name}...`, percent: ((index + 1) / actualFiles.length) * 50});
+                        
                         // Check cache first
                         const cached = await cacheDB.isCached(
                             file.webkitRelativePath || file.name,
@@ -241,13 +366,20 @@
                         );
                         
                         let data;
+                        let videoFrameHashes = [];
+                        
                         if (cached) {
                             console.log('Using cached:', file.name);
                             const cachedData = await cacheDB.getFileHash(file.webkitRelativePath || file.name);
-                            data = new Uint8Array(0); // Don't need data for cached files
+                            data = new Uint8Array(0);
                         } else {
                             const arrayBuffer = await file.arrayBuffer();
                             data = new Uint8Array(arrayBuffer);
+                            
+                            // Process video files
+                            if (isVideoFile(file.name)) {
+                                videoFrameHashes = await processVideoFile(file);
+                            }
                         }
                         
                         return {
@@ -255,7 +387,8 @@
                             path: file.webkitRelativePath || file.name,
                             size: file.size,
                             modTime: file.lastModified,
-                            data: data
+                            data: data,
+                            videoFrameHashes: videoFrameHashes
                         };
                     })
                 );
@@ -339,7 +472,7 @@
                     <div className="max-w-6xl mx-auto px-6 py-4">
                         <div className="flex justify-between items-center">
                             <div>
-                                <h1 className="text-2xl font-bold">🔍 pure-dupes Phase 1</h1>
+                                <h1 className="text-2xl font-bold">🔍 Pure Dupes</h1>
                                 <p className="text-sm text-gray-600">
                                     ✨ Web Workers • 💾 Caching • 📊 Smart Groups • 📈 Progress
                                 </p>
@@ -361,8 +494,8 @@
                 <div className="max-w-6xl mx-auto px-6 py-6">
                     {!result ? (
                         <div className="bg-white rounded-xl p-12 text-center">
-                            <div className="text-6xl mb-4">🚀</div>
-                            <h2 className="text-2xl font-semibold mb-4">Phase 1 + Phase 2 Features</h2>
+                            <div className="text-6xl mb-4">📁</div>
+                            <h2 className="text-2xl font-semibold mb-4">Find Duplicate Files</h2>
                             
                             {/* Privacy Notice */}
                             <div className="mb-6 p-4 bg-green-50 border-2 border-green-500 rounded-lg max-w-2xl mx-auto">

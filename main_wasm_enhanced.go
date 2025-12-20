@@ -185,8 +185,10 @@ type FileTree struct {
 	ChunkCount int
 	Leaves     []string
 	ModTime    int64
-	PHash      uint64 // Phase 2: Image perceptual hash
-	IsImage    bool   // Phase 2: Is this an image file?
+	PHash      uint64   // Phase 2: Image perceptual hash
+	IsImage    bool     // Phase 2: Is this an image file?
+	VideoHash  []uint64 // Phase 2: Video frame hashes (array of pHashes)
+	IsVideo    bool     // Phase 2: Is this a video file?
 }
 
 type DuplicateMatch struct {
@@ -229,11 +231,12 @@ type DedupResult struct {
 }
 
 type JSFile struct {
-	Name    string
-	Path    string
-	Size    int64
-	Data    []byte
-	ModTime int64
+	Name             string
+	Path             string
+	Size             int64
+	Data             []byte
+	ModTime          int64
+	VideoFrameHashes []uint64 // Phase 2: Video frame hashes from JavaScript
 }
 
 // ============================================================================
@@ -344,6 +347,13 @@ func ProcessFile(file JSFile, chunkSize int, index int, total int) FileTree {
 		}
 	}
 
+	// Phase 2: Video frame hashes (computed by JavaScript)
+	var videoHash []uint64
+	isVideo := isVideoFile(file.Path)
+	if isVideo && len(file.VideoFrameHashes) > 0 {
+		videoHash = file.VideoFrameHashes
+	}
+
 	return FileTree{
 		Path:       file.Path,
 		Root:       root,
@@ -354,6 +364,8 @@ func ProcessFile(file JSFile, chunkSize int, index int, total int) FileTree {
 		ModTime:    file.ModTime,
 		PHash:      pHash,
 		IsImage:    isImage,
+		VideoHash:  videoHash,
+		IsVideo:    isVideo,
 	}
 }
 
@@ -458,7 +470,7 @@ func CompareFiles(a, b FileTree) float64 {
 // SMART DUPLICATE GROUPS
 // ============================================================================
 
-func CreateSmartGroups(filesByRoot map[string][]FileTree, partialMatches map[string][]DuplicateMatch, visualMatches map[string][]DuplicateMatch) []DuplicateGroup {
+func CreateSmartGroups(filesByRoot map[string][]FileTree, partialMatches map[string][]DuplicateMatch, visualMatches map[string][]DuplicateMatch, fileTrees []FileTree) []DuplicateGroup {
 	groups := []DuplicateGroup{}
 
 	// Exact duplicate groups
@@ -524,9 +536,15 @@ func CreateSmartGroups(filesByRoot map[string][]FileTree, partialMatches map[str
 		}
 
 		groupFiles := []string{srcPath}
+		var totalSimilarity float64
+		var matchCount int
+		var totalSize int64
+
 		for _, match := range matches {
 			if match.Similarity >= 0.85 && !processedVisual[match.TargetPath] {
 				groupFiles = append(groupFiles, match.TargetPath)
+				totalSimilarity += match.Similarity
+				matchCount++
 			}
 		}
 
@@ -535,12 +553,40 @@ func CreateSmartGroups(filesByRoot map[string][]FileTree, partialMatches map[str
 				processedVisual[path] = true
 			}
 
+			// Calculate average similarity
+			avgSimilarity := 0.9
+			if matchCount > 0 {
+				avgSimilarity = totalSimilarity / float64(matchCount)
+			}
+
+			// Calculate total size (find files in fileTrees)
+			for _, ft := range fileTrees {
+				for _, gf := range groupFiles {
+					if ft.Path == gf {
+						totalSize += ft.Size
+						break
+					}
+				}
+			}
+
+			// Estimate savings (keep one, remove rest)
+			savings := totalSize
+			if len(groupFiles) > 0 {
+				// Assume we keep the first one
+				for _, ft := range fileTrees {
+					if ft.Path == groupFiles[0] {
+						savings = totalSize - ft.Size
+						break
+					}
+				}
+			}
+
 			groups = append(groups, DuplicateGroup{
 				Files:      groupFiles,
-				Similarity: 0.9,
-				Size:       0,
+				Similarity: avgSimilarity,
+				Size:       totalSize,
 				GroupType:  "visual",
-				Savings:    0,
+				Savings:    savings,
 			})
 		}
 	}
@@ -662,14 +708,38 @@ func FindDuplicates(files []JSFile, threshold float64, chunkSize int) DedupResul
 
 	reportProgress(80, 100, "Finding visually similar images...", 80)
 
-	// Phase 2: Visual duplicates
-	visualDups := findVisualDuplicates(fileTrees, 0.85)
+	// Phase 2: Visual duplicates (optimized - skip exact matches)
+	// Build set of files already in exact duplicate groups
+	filesInExactGroups := make(map[string]bool)
+	for _, group := range filesByRoot {
+		if len(group) > 1 {
+			for _, ft := range group {
+				filesInExactGroups[ft.Path] = true
+			}
+		}
+	}
+
+	// Only check images NOT in exact duplicate groups
+	imagesToCheck := Filter(fileTrees, func(ft FileTree) bool {
+		return ft.IsImage && ft.PHash != 0 && !filesInExactGroups[ft.Path]
+	})
+
+	// Only check videos NOT in exact duplicate groups
+	videosToCheck := Filter(fileTrees, func(ft FileTree) bool {
+		return ft.IsVideo && len(ft.VideoHash) > 0 && !filesInExactGroups[ft.Path]
+	})
+
+	reportProgress(81, 100, fmt.Sprintf("Checking %d images and %d videos for visual similarity...", len(imagesToCheck), len(videosToCheck)), 81)
+
+	// Combine images and videos for visual duplicate detection
+	mediaToCheck := append(imagesToCheck, videosToCheck...)
+	visualDups := findVisualDuplicates(mediaToCheck, 0.85)
 	visualCount := len(visualDups)
 
 	reportProgress(85, 100, "Creating smart groups...", 85)
 
 	// Smart groups (now includes visual matches)
-	smartGroups := CreateSmartGroups(filesByRoot, partialDups.allMatches, visualDups)
+	smartGroups := CreateSmartGroups(filesByRoot, partialDups.allMatches, visualDups, fileTrees)
 
 	reportProgress(90, 100, "Building file tree...", 90)
 
