@@ -226,13 +226,33 @@
                 return;
             }
 
+            // DEBUG: Log what we received
+            console.log('📂 Folder selected');
+            console.log(`📊 Browser gave us ${fileList.length} items`);
+            
+            // Filter out directories (only process actual files)
+            const actualFiles = Array.from(fileList).filter(f => f.size > 0 || f.type !== '');
+            console.log(`📄 Actual files (non-empty): ${actualFiles.length}`);
+            console.log('📝 First 10 files:', actualFiles.slice(0, 10).map(f => ({
+                name: f.name,
+                path: f.webkitRelativePath || f.name,
+                size: f.size,
+                type: f.type
+            })));
+
+            if (actualFiles.length === 0) {
+                alert('No readable files found! This can happen if:\n• Browser lacks permissions\n• Folder only contains directories\n• All files are hidden/system files');
+                setLoading(false);
+                return;
+            }
+
             setLoading(true);
-            setProgress({current: 0, total: 100, message: 'Reading files...', percent: 0});
+            setProgress({current: 0, total: actualFiles.length, message: `Reading ${actualFiles.length} files...`, percent: 0});
             
             try {
                 // Read files
                 const files = await Promise.all(
-                    Array.from(fileList).map(async (file) => {
+                    actualFiles.map(async (file) => {
                         // Check cache first
                         const cached = await cacheDB.isCached(
                             file.webkitRelativePath || file.name,
